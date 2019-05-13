@@ -1,16 +1,24 @@
-CLUSTER_INDICATOR = "[[CLUSTER"
+import re
 
 
 class ClusterParser:
 
+    __cluster_regex = re.compile(r"\[\[CLUSTER (?P<id>\d+)]]", re.IGNORECASE)
+
     @staticmethod
     def cluster_mappings(cluster_file):
         mapping = {}
-        current_cluster = ""
+        current_cluster_id = None
         for line in open(cluster_file, "r"):
-            if line.startswith(CLUSTER_INDICATOR):
-                current_cluster = int(line.split(" ")[1].replace("]", ""))
+            # remove trailing \n
+            line = line[:-1]
+            match = ClusterParser.__cluster_regex.match(line)
+
+            if not match:
+                mapping[current_cluster_id].append(line)
                 continue
-            mapping[line.replace("\n", "")] = current_cluster
+
+            current_cluster_id = int(match.group("id"))
+            mapping[current_cluster_id] = []
 
         return mapping
