@@ -1,19 +1,19 @@
 import argparse
+import logging
 import time
 from operator import itemgetter
 
-import umap
 import pandas
-import logging
+import plotly
+import plotly.graph_objs as go
+import umap
 from gensim.models import Doc2Vec
 
 from util.cluster_parser import ClusterParser
 from util.filesystem_validators import AccessibleDirectory, AccessibleTextFile
 
-import plotly
-import plotly.graph_objs as go
-
 cluster_mapping = {}
+entity_relations = {}
 
 
 def main():
@@ -21,12 +21,16 @@ def main():
     parser = _initialize_parser()
     args = parser.parse_args()
     _initialize_cluster_mapping(args.clusters)
+    global entity_relations
+    entity_relations = ClusterParser.entity_relations(args.entity_relations)
+    relation_clusters = _inverse_cluster_mapping(cluster_mapping)
     model = _load_model(args.input)
     doc_embeddings = model.docvecs.vectors_docs
     embedding = _apply_umap(doc_embeddings)
 
-    d = pandas.DataFrame(embedding, columns=["c1", "c2"])
+    d = pandas.DataFrame(embedding, columns=["c1", "c2", "c3"])
     d["word"] = [w for w in model.docvecs.doctags]
+    d["cluster_id"] = [relation_clusters[w] if w in relation_clusters else -1 for w in model.docvecs.doctags]
     d["tooltip"] = d.apply(build_tooltip, axis=1)
     layout = dict(title="Doc2Vec embeddings",
                   yaxis=dict(zeroline=False),
@@ -34,15 +38,15 @@ def main():
                   hovermode="closest")
 
     data = []
-    global cluster_mapping
     for cluster_id in cluster_mapping:
         indices = [index for index, value in enumerate(d["word"]) if value in cluster_mapping[cluster_id]]
         cluster_color = get_color(cluster_id)
 
-        cluster = go.Scattergl(
+        cluster = go.Scatter3d(
             x=itemgetter(*indices)(d["c1"]),
             y=itemgetter(*indices)(d["c2"]),
-            name=f"CLUSTER #{cluster_id}",
+            z=itemgetter(*indices)(d["c3"]),
+            name=f"CLUSTER #{cluster_id} ({len(cluster_mapping[cluster_id])} entities)",
             mode="markers",
             marker=dict(
                 color=cluster_color,
@@ -68,6 +72,8 @@ def _initialize_parser():
     general_parser.add_argument("--clusters", help="Textfiles containing cluster information",
                                 action=AccessibleTextFile, required=True)
     general_parser.add_argument("--output", help="Desired location for storing dimensionality reduced resukts",
+                                required=True, action=AccessibleDirectory)
+    general_parser.add_argument("--entity-relations", help="Path to directory containing relation info about entities",
                                 required=True, action=AccessibleDirectory)
 
     return general_parser
@@ -99,7 +105,7 @@ def _apply_umap(embedding):
     logging.info(f"applying umap...")
     start_time = time.perf_counter()
 
-    transformed = umap.UMAP(n_components=2).fit_transform(embedding)
+    transformed = umap.UMAP(n_components=3).fit_transform(embedding)
 
     end_time = time.perf_counter()
     logging.info(f"umap applied after {end_time - start_time} seconds")
@@ -107,8 +113,12 @@ def _apply_umap(embedding):
 
 
 def build_tooltip(row):
-    full_string = ["<b>Word:</b> ", row["word"],
-                   "<br>"]
+    full_string = ["Word: ", row["word"]]
+    if row["cluster_id"] >= 0:
+        full_string.extend(
+            ["<br><br>", f"<b>Cluster relations ({len(cluster_mapping[row['cluster_id']])} entities):</b><br>"])
+        full_string.append("<br>".join(f"{relation.as_html()}" if row["cluster_id"] != 1 else "" for relation in
+                                       entity_relations[row["cluster_id"]]))
     return "".join(full_string)
 
 
@@ -118,6 +128,15 @@ def get_color(cluster_id):
     b = (289 + cluster_id * 23) % 255
 
     return f"rgb({r}, {g}, {b})"
+
+
+def _inverse_cluster_mapping(id_entity_mapping):
+    inverse = {}
+    for id in id_entity_mapping:
+        for entity in id_entity_mapping[id]:
+            inverse[entity] = id
+
+    return inverse
 
 
 if __name__ == "__main__":
